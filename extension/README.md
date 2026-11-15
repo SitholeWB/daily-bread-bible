@@ -14,10 +14,10 @@
 ### 📸 Preview
 
 **Scrollable Hover Reader (Active Verse, Bookmarking, Full Chapter & Cross-References)**  
-![Hover Scripture Reader Tooltip](media/screenshot-hover.png)
+![Hover Scripture Reader Tooltip](https://raw.githubusercontent.com/SitholeWB/daily-bread-bible/main/extension/media/screenshot-hover.png)
 
 **Quick Action Options Menu (`Ctrl+Alt+B` / Click Status Bar)**  
-![Daily Bible Options Menu](media/screenshot-options.png)
+![Daily Bible Options Menu](https://raw.githubusercontent.com/SitholeWB/daily-bread-bible/main/extension/media/screenshot-options.png)
 
 ---
 
