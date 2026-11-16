@@ -1,4 +1,4 @@
-name: Build & Release Desktop Snap
+name: Build & Release Desktop (Ubuntu Snap, Linux, Windows, macOS)
 
 on:
   push:
@@ -7,12 +7,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-snap:
+  build-ubuntu-snap:
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Install Snapcraft
@@ -33,11 +31,112 @@ jobs:
       - name: Upload Snap artifact
         uses: actions/upload-artifact@v4
         with:
-          name: daily-bread-bible-snap
+          name: ubuntu-snap
           path: desktop/*.snap
 
-      - name: Attach Snap to GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
+  build-linux-tar:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux GTK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Test & Build Linux Release
+        working-directory: desktop
+        run: |
+          flutter pub get
+          flutter test
+          flutter build linux --release
+          tar -czf ../daily-bread-bible-linux-x64.tar.gz -C build/linux/x64/release/bundle .
+
+      - name: Upload Linux tar.gz artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tar
+          path: daily-bread-bible-linux-x64.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build Windows Release
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          flutter pub get
+          flutter build windows --release
+          Compress-Archive -Path "build/windows/x64/runner/Release/*" -DestinationPath "../daily-bread-bible-windows-x64.zip" -Force
+
+      - name: Upload Windows zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: daily-bread-bible-windows-x64.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build macOS Release & DMG
+        working-directory: desktop
+        run: |
+          flutter pub get
+          flutter build macos --release
+          mkdir -p dmg_staging
+          cp -R build/macos/Build/Products/Release/daily_bread.app "dmg_staging/Daily Bread.app"
+          ln -s /Applications dmg_staging/Applications
+          hdiutil create -volname "Daily Bread" -srcfolder dmg_staging -ov -format UDZO ../daily-bread-bible-macos.dmg
+
+      - name: Upload macOS dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: daily-bread-bible-macos.dmg
+
+  release:
+    needs: [build-ubuntu-snap, build-linux-tar, build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: desktop/*.snap
+          generate_release_notes: true
+          files: |
+            release-artifacts/ubuntu-snap/*.snap
+            release-artifacts/linux-tar/*.tar.gz
+            release-artifacts/windows-zip/*.zip
+            release-artifacts/macos-dmg/*.dmg

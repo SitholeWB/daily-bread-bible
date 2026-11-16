@@ -211,6 +211,14 @@ class NotificationService extends ChangeNotifier {
   }
 
   Future<bool> _dispatchDesktopNotification(String title, String body) async {
+    if (Platform.isMacOS) {
+      return _dispatchMacOSNotification(title, body);
+    }
+    if (Platform.isWindows) {
+      return _dispatchWindowsNotification(title, body);
+    }
+    if (!Platform.isLinux) return false;
+
     try {
       final client = DBusClient.session();
       final object = DBusRemoteObject(
@@ -285,7 +293,52 @@ class NotificationService extends ChangeNotifier {
     }
   }
 
+  Future<bool> _dispatchMacOSNotification(String title, String body) async {
+    try {
+      final safeTitle = title.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+      final safeBody = body.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+      final res = await Process.run('osascript', [
+        '-e',
+        'display notification "$safeBody" with title "$safeTitle"',
+      ]);
+      return res.exitCode == 0;
+    } catch (e) {
+      debugPrint('macOS notification failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _dispatchWindowsNotification(String title, String body) async {
+    try {
+      String xmlEsc(String s) => s
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&apos;');
+      final safeTitle = xmlEsc(title);
+      final safeBody = xmlEsc(body);
+      final psScript = '''
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+\$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+\$xml.LoadXml('<toast scenario="reminder"><visual><binding template="ToastGeneric"><text>$safeTitle</text><text>$safeBody</text></binding></visual></toast>')
+\$toast = [Windows.UI.Notifications.ToastNotification]::new(\$xml)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.dailybread.daily_bread').Show(\$toast)
+''';
+      final res = await Process.run(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', psScript],
+      );
+      return res.exitCode == 0;
+    } catch (e) {
+      debugPrint('Windows notification failed: $e');
+      return false;
+    }
+  }
+
   Future<void> _syncLauncherBadge(int count) async {
+    if (!Platform.isLinux) return;
     try {
       final client = DBusClient.session();
       final path = DBusObjectPath('/com/canonical/unity/launcherentry/1');
