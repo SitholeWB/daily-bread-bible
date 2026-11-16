@@ -14,20 +14,25 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Snapcraft
+      - name: Install Snapcraft & Build Snaps
         run: |
           sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 || true
           sudo systemctl start snapd.socket snapd || true
           sudo snap wait system seed.loaded || true
-          for attempt in 1 2 3 4; do
-            if sudo snap install snapcraft --classic; then
-              exit 0
-            fi
-            delay=$((attempt * 10))
-            echo "snap install snapcraft failed (attempt $attempt), retrying in ${delay}s..."
-            sleep $delay
-          done
-          exit 1
+          install_with_retry() {
+            for attempt in 1 2 3 4; do
+              if sudo snap install "$@"; then
+                return 0
+              fi
+              delay=$((attempt * 10))
+              echo "snap install $* failed (attempt $attempt), retrying in ${delay}s..."
+              sleep $delay
+            done
+            return 1
+          }
+          install_with_retry snapcraft --classic
+          install_with_retry core24
+          install_with_retry gnome-46-2404-sdk
 
       - name: Build Snap with Snapcraft (destructive-mode on ubuntu-24.04)
         working-directory: desktop
