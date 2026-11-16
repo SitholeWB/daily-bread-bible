@@ -32,7 +32,10 @@ jobs:
           }
           install_with_retry snapcraft --classic
           install_with_retry core24
+          install_with_retry gnome-46-2404
           install_with_retry gnome-46-2404-sdk
+          install_with_retry mesa-2404
+          install_with_retry gtk-common-themes
 
       - name: Build Snap with Snapcraft (destructive-mode on ubuntu-24.04)
         working-directory: desktop
