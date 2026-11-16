@@ -1,4 +1,4 @@
-name: Build & Release Desktop (Ubuntu Snap, Linux, Windows, macOS)
+name: Build & Release Desktop (Ubuntu Snap, Linux DEB/RPM/AppImage, Windows, macOS)
 
 on:
   push:
@@ -16,6 +16,7 @@ jobs:
 
       - name: Install Snapcraft
         run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 || true
           sudo systemctl start snapd.socket snapd || true
           sudo snap wait system seed.loaded || true
           for attempt in 1 2 3 4; do
@@ -38,16 +39,16 @@ jobs:
           name: ubuntu-snap
           path: desktop/*.snap
 
-  build-linux-tar:
+  build-linux-packages:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Linux GTK build dependencies
+      - name: Install Linux GTK & packaging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev dpkg rpm desktop-file-utils libfuse2t64
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -61,13 +62,109 @@ jobs:
           flutter pub get
           flutter test
           flutter build linux --release
-          tar -czf ../daily-bread-bible-linux-x64.tar.gz -C build/linux/x64/release/bundle .
 
-      - name: Upload Linux tar.gz artifact
+      - name: Package .tar.gz, .deb, .rpm, and .AppImage
+        run: |
+          VERSION=$(grep '^version:' desktop/pubspec.yaml | awk '{print $2}' | cut -d+ -f1)
+          BUNDLE="desktop/build/linux/x64/release/bundle"
+          mkdir -p out
+
+          # 1. Portable tar.gz
+          tar -czf "out/daily-bread-bible-${VERSION}-linux-x64.tar.gz" -C "$BUNDLE" .
+
+          # 2. Debian / Ubuntu / Mint (.deb)
+          DEB_DIR="pkg_deb"
+          mkdir -p "$DEB_DIR/DEBIAN" \
+                   "$DEB_DIR/opt/daily-bread-bible" \
+                   "$DEB_DIR/usr/bin" \
+                   "$DEB_DIR/usr/share/applications" \
+                   "$DEB_DIR/usr/share/icons/hicolor/512x512/apps"
+          cp -r "$BUNDLE"/* "$DEB_DIR/opt/daily-bread-bible/"
+          ln -s /opt/daily-bread-bible/daily_bread "$DEB_DIR/usr/bin/daily-bread-bible"
+          cp desktop/assets/icon.png "$DEB_DIR/usr/share/icons/hicolor/512x512/apps/daily-bread-bible.png"
+          cat > "$DEB_DIR/usr/share/applications/daily-bread-bible.desktop" <<'EOF'
+          [Desktop Entry]
+          Name=Daily Bread
+          Comment=Offline Bible & Study Notes
+          Exec=daily-bread-bible
+          Icon=daily-bread-bible
+          Terminal=false
+          Type=Application
+          Categories=Education;Literature;
+          StartupWMClass=com.dailybread.daily_bread
+          EOF
+          cat > "$DEB_DIR/DEBIAN/control" <<EOF
+          Package: daily-bread-bible
+          Version: ${VERSION}
+          Section: education
+          Priority: optional
+          Architecture: amd64
+          Depends: libgtk-3-0, libstdc++6
+          Maintainer: SitholeWB <https://github.com/SitholeWB/daily-bread-bible>
+          Description: Daily Bread Offline Bible & Study Notes
+           Offline-first Bible reading and study app with 60 translations,
+           cross-references, study notes, and scheduled scripture notifications.
+          EOF
+          dpkg-deb --build "$DEB_DIR" "out/daily-bread-bible_${VERSION}_amd64.deb"
+
+          # 3. Fedora / RHEL / openSUSE (.rpm)
+          RPM_ROOT="$HOME/rpmbuild"
+          mkdir -p "$RPM_ROOT"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cat > "$RPM_ROOT/SPECS/daily-bread-bible.spec" <<EOF
+          Name:           daily-bread-bible
+          Version:        ${VERSION}
+          Release:        1%{?dist}
+          Summary:        Daily Bread Offline Bible & Study Notes
+          License:        MIT
+          BuildArch:      x86_64
+          AutoReqProv:    no
+
+          %description
+          Offline-first Bible reading and study app with 60 translations,
+          cross-references, study notes, and scheduled scripture notifications.
+
+          %install
+          mkdir -p %{buildroot}/opt/daily-bread-bible
+          mkdir -p %{buildroot}/usr/bin
+          mkdir -p %{buildroot}/usr/share/applications
+          mkdir -p %{buildroot}/usr/share/icons/hicolor/512x512/apps
+          cp -r $GITHUB_WORKSPACE/pkg_deb/opt/daily-bread-bible/* %{buildroot}/opt/daily-bread-bible/
+          ln -s /opt/daily-bread-bible/daily_bread %{buildroot}/usr/bin/daily-bread-bible
+          cp $GITHUB_WORKSPACE/desktop/assets/icon.png %{buildroot}/usr/share/icons/hicolor/512x512/apps/daily-bread-bible.png
+          cp $GITHUB_WORKSPACE/pkg_deb/usr/share/applications/daily-bread-bible.desktop %{buildroot}/usr/share/applications/daily-bread-bible.desktop
+
+          %files
+          /opt/daily-bread-bible
+          /usr/bin/daily-bread-bible
+          /usr/share/applications/daily-bread-bible.desktop
+          /usr/share/icons/hicolor/512x512/apps/daily-bread-bible.png
+          EOF
+          rpmbuild -bb "$RPM_ROOT/SPECS/daily-bread-bible.spec"
+          cp "$RPM_ROOT"/RPMS/x86_64/*.rpm "out/daily-bread-bible-${VERSION}-1.x86_64.rpm"
+
+          # 4. Universal AppImage (Arch, Fedora, Debian, openSUSE, etc.)
+          APPDIR="DailyBread.AppDir"
+          mkdir -p "$APPDIR/opt/daily-bread-bible" \
+                   "$APPDIR/usr/share/icons/hicolor/512x512/apps"
+          cp -r "$BUNDLE"/* "$APPDIR/opt/daily-bread-bible/"
+          cp desktop/assets/icon.png "$APPDIR/daily-bread-bible.png"
+          cp desktop/assets/icon.png "$APPDIR/.DirIcon"
+          cp "$DEB_DIR/usr/share/applications/daily-bread-bible.desktop" "$APPDIR/daily-bread-bible.desktop"
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/opt/daily-bread-bible/daily_bread" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+          curl -fsSL -o appimagetool.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
+          ARCH=x86_64 ./appimagetool.AppImage --appimage-extract-and-run "$APPDIR" "out/daily-bread-bible-${VERSION}-x86_64.AppImage"
+
+      - name: Upload Linux packages
         uses: actions/upload-artifact@v4
         with:
-          name: linux-tar
-          path: daily-bread-bible-linux-x64.tar.gz
+          name: linux-packages
+          path: out/*
 
   build-windows:
     runs-on: windows-latest
@@ -124,7 +221,7 @@ jobs:
           path: daily-bread-bible-macos.dmg
 
   release:
-    needs: [build-ubuntu-snap, build-linux-tar, build-windows, build-macos]
+    needs: [build-ubuntu-snap, build-linux-packages, build-windows, build-macos]
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     runs-on: ubuntu-24.04
     permissions:
@@ -142,6 +239,6 @@ jobs:
           fail_on_unmatched_files: false
           files: |
             release-artifacts/ubuntu-snap/*.snap
-            release-artifacts/linux-tar/*.tar.gz
+            release-artifacts/linux-packages/*
             release-artifacts/windows-zip/*.zip
             release-artifacts/macos-dmg/*.dmg
