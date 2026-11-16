@@ -6,7 +6,7 @@ import '../services/notification_service.dart';
 import '../services/storage_service.dart';
 import 'cross_ref_panel.dart';
 import 'feedback_dialog.dart';
-import 'notification_settings_dialog.dart';
+import 'settings_page.dart';
 import 'study_note_dialog.dart';
 import 'translations_panel.dart';
 
@@ -34,7 +34,7 @@ class _AppShellState extends State<AppShell> {
   SidebarTab _activeTab = SidebarTab.books;
   bool _sidebarOpen = true;
   bool _inspectorOpen = false;
-  bool _showDailyBanner = true;
+  bool _showSettingsPage = false;
 
   late int _bookId;
   late int _chapter;
@@ -60,11 +60,17 @@ class _AppShellState extends State<AppShell> {
     super.initState();
     _bookId = widget.storage.lastBookId;
     _chapter = widget.storage.lastChapter;
+    widget.notifications.addListener(_onNotificationsChanged);
     _loadCurrentChapter();
+  }
+
+  void _onNotificationsChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    widget.notifications.removeListener(_onNotificationsChanged);
     _searchController.dispose();
     super.dispose();
   }
@@ -202,15 +208,8 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  Future<void> _openNotificationSettings() async {
-    await showDialog<void>(
-      context: context,
-      builder: (_) => NotificationSettingsDialog(
-        storage: widget.storage,
-        notifications: widget.notifications,
-      ),
-    );
-    if (mounted) setState(() {});
+  void _openSettingsPage() {
+    setState(() => _showSettingsPage = true);
   }
 
   @override
@@ -229,6 +228,7 @@ class _AppShellState extends State<AppShell> {
             onDestinationSelected: (idx) {
               final next = SidebarTab.values[idx];
               setState(() {
+                _showSettingsPage = false;
                 if (_activeTab == next) {
                   _sidebarOpen = !_sidebarOpen;
                 } else {
@@ -282,10 +282,29 @@ class _AppShellState extends State<AppShell> {
                 alignment: Alignment.bottomCenter,
                 child: Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: IconButton(
-                    tooltip: 'Send Feedback',
-                    icon: const Icon(Icons.feedback_outlined),
-                    onPressed: _openFeedbackDialog,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Settings',
+                        icon: Icon(
+                          _showSettingsPage
+                              ? Icons.settings
+                              : Icons.settings_outlined,
+                          color: _showSettingsPage
+                              ? theme.colorScheme.primary
+                              : null,
+                        ),
+                        onPressed: () => setState(
+                            () => _showSettingsPage = !_showSettingsPage),
+                      ),
+                      const SizedBox(height: 4),
+                      IconButton(
+                        tooltip: 'Send Feedback',
+                        icon: const Icon(Icons.feedback_outlined),
+                        onPressed: _openFeedbackDialog,
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -302,15 +321,34 @@ class _AppShellState extends State<AppShell> {
             ),
           if (_sidebarOpen) const VerticalDivider(width: 1),
 
-          // 3. Main Scripture Reader Area
+          // 3. Main Scripture Reader or Settings Area
           Expanded(
-            child: Column(
-              children: [
-                _buildTopToolbar(theme, book, availableTranslations),
-                const Divider(height: 1),
-                if (_showDailyBanner) _buildDailyBreadBanner(theme, translationId),
-                Expanded(
-                  child: _loadingChapter
+            child: _showSettingsPage
+                ? SettingsPage(
+                    repo: widget.repo,
+                    storage: widget.storage,
+                    notifications: widget.notifications,
+                    onThemeChanged: widget.onThemeChanged,
+                    onReadingSettingsChanged: () => _loadCurrentChapter(),
+                    onOpenPacks: () {
+                      setState(() {
+                        _showSettingsPage = false;
+                        _activeTab = SidebarTab.translations;
+                        _sidebarOpen = true;
+                      });
+                    },
+                    onExportBackup: _exportBackup,
+                    onOpenFeedback: _openFeedbackDialog,
+                    onClose: () => setState(() => _showSettingsPage = false),
+                  )
+                : Column(
+                    children: [
+                      _buildTopToolbar(theme, book, availableTranslations),
+                      const Divider(height: 1),
+                      if (widget.storage.showDailyBanner)
+                        _buildDailyBreadBanner(theme, translationId),
+                      Expanded(
+                        child: _loadingChapter
                       ? const Center(child: CircularProgressIndicator())
                       : _verses.isEmpty
                           ? Center(
@@ -522,16 +560,16 @@ class _AppShellState extends State<AppShell> {
             onPressed: _exportBackup,
           ),
 
-          // Notifications
+          // Notifications & Schedule Settings
           IconButton(
-            tooltip: 'Daily Bible Notifications (3× daily)',
+            tooltip: 'Schedule & Notification Settings',
             icon: Icon(
               widget.storage.dailyNotificationsEnabled
                   ? Icons.notifications_active_outlined
                   : Icons.notifications_off_outlined,
               size: 19,
             ),
-            onPressed: _openNotificationSettings,
+            onPressed: _openSettingsPage,
           ),
 
           // Feedback
@@ -553,7 +591,7 @@ class _AppShellState extends State<AppShell> {
   }
 
   Widget _buildDailyBreadBanner(ThemeData theme, String translationId) {
-    final dailyRef = widget.repo.getDailyVerseRef();
+    final dailyRef = widget.notifications.activeVerse;
     final dailyBook = widget.repo.getBook(dailyRef.bookId);
     return FutureBuilder<String?>(
       future: widget.repo.getVerseText(
@@ -597,6 +635,11 @@ class _AppShellState extends State<AppShell> {
                   ],
                 ),
               ),
+              IconButton(
+                tooltip: 'Next Verse',
+                icon: const Icon(Icons.refresh, size: 17),
+                onPressed: () => widget.notifications.rotateVerseNow(),
+              ),
               TextButton(
                 onPressed: () => _navigateTo(
                     dailyRef.bookId, dailyRef.chapter,
@@ -606,7 +649,10 @@ class _AppShellState extends State<AppShell> {
               IconButton(
                 tooltip: 'Dismiss',
                 icon: const Icon(Icons.close, size: 16),
-                onPressed: () => setState(() => _showDailyBanner = false),
+                onPressed: () async {
+                  setState(() => widget.storage.showDailyBanner = false);
+                  await widget.storage.save();
+                },
               ),
             ],
           ),

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:dbus/dbus.dart';
+import 'package:flutter/foundation.dart';
+import '../models/bible_models.dart';
 import 'bible_repository.dart';
 import 'storage_service.dart';
 
@@ -9,31 +11,42 @@ class NotificationSlot {
   final String label;
   final int hour;
   final int minute;
-  final int slotOffset;
 
   const NotificationSlot({
     required this.id,
     required this.label,
     required this.hour,
     required this.minute,
-    required this.slotOffset,
   });
 
   int get totalMinutes => hour * 60 + minute;
 }
 
-class NotificationService {
+class NotificationService extends ChangeNotifier {
   final BibleRepository repo;
   final StorageService storage;
   Timer? _timer;
+  bool _isAppInForeground = true;
 
   NotificationService({required this.repo, required this.storage});
 
+  VerseRef get activeVerse =>
+      storage.currentVerseRef ?? repo.getDailyVerseRef();
+
+  int get unreadCount => storage.unreadNotificationCount;
+
+  bool get isAppInForeground => _isAppInForeground;
+
   void start() {
     _timer?.cancel();
-    // Check immediately and then every 30 seconds while app is running
+    storage.currentVerseRef ??= repo.getDailyVerseRef();
+    if (storage.lastRotationMs == 0) {
+      storage.lastRotationMs = DateTime.now().millisecondsSinceEpoch;
+    }
+    _syncLauncherBadge(storage.unreadNotificationCount);
     _checkSchedule();
-    _timer = Timer.periodic(const Duration(seconds: 30), (_) => _checkSchedule());
+    _timer =
+        Timer.periodic(const Duration(seconds: 15), (_) => _checkSchedule());
   }
 
   void stop() {
@@ -41,92 +54,163 @@ class NotificationService {
     _timer = null;
   }
 
-  List<NotificationSlot> get slots => [
-        NotificationSlot(
-          id: 'morning',
-          label: 'Morning Bread',
-          hour: storage.morningHour,
-          minute: storage.morningMinute,
-          slotOffset: 0,
-        ),
-        NotificationSlot(
-          id: 'noon',
-          label: 'Midday Bread',
-          hour: storage.noonHour,
-          minute: storage.noonMinute,
-          slotOffset: 1,
-        ),
-        NotificationSlot(
-          id: 'afternoon',
-          label: 'Afternoon Bread',
-          hour: storage.afternoonHour,
-          minute: storage.afternoonMinute,
-          slotOffset: 2,
-        ),
-      ];
+  Future<void> setForeground(bool inForeground) async {
+    _isAppInForeground = inForeground;
+    if (inForeground && storage.unreadNotificationCount > 0) {
+      await clearUnreadBadge();
+    }
+  }
+
+  Future<void> clearUnreadBadge() async {
+    if (storage.unreadNotificationCount == 0) {
+      await _syncLauncherBadge(0);
+      return;
+    }
+    storage.unreadNotificationCount = 0;
+    await storage.save();
+    await _syncLauncherBadge(0);
+    notifyListeners();
+  }
+
+  List<NotificationSlot> get slots {
+    final sorted = [...storage.scheduledTimes]..sort();
+    return sorted.map((t) {
+      final parts = t.split(':');
+      final h = int.tryParse(parts[0]) ?? 8;
+      final m = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+      final label = h < 12
+          ? 'Morning Bread'
+          : h < 15
+              ? 'Midday Bread'
+              : 'Afternoon Bread';
+      return NotificationSlot(id: t, label: label, hour: h, minute: m);
+    }).toList();
+  }
 
   Future<void> _checkSchedule() async {
-    if (!storage.dailyNotificationsEnabled) return;
+    final mode = storage.scheduleMode;
+    if (mode == 'manual') return;
 
-    final now = DateTime.now();
-    final todayPrefix =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-    final nowMinutes = now.hour * 60 + now.minute;
+    if (mode == 'interval') {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final intervalMs = storage.rotationIntervalMinutes * 60 * 1000;
+      if (intervalMs <= 0) return;
 
-    // Pick the most recent slot whose scheduled time has passed today
-    NotificationSlot? dueSlot;
-    for (final slot in slots) {
-      if (nowMinutes >= slot.totalMinutes) {
-        dueSlot = slot;
+      if (storage.lastRotationMs == 0) {
+        storage.lastRotationMs = nowMs;
+        await storage.save();
+        return;
       }
-    }
-    if (dueSlot == null) return;
 
-    final slotKey = '$todayPrefix:${dueSlot.id}';
-    if (storage.lastNotifiedSlotKey == slotKey) return;
-
-    // Avoid firing a morning notification at 6pm if afternoon already fired today
-    if (storage.lastNotifiedSlotKey.startsWith(todayPrefix)) {
-      final lastId = storage.lastNotifiedSlotKey.split(':').last;
-      final lastIdx = slots.indexWhere((s) => s.id == lastId);
-      final dueIdx = slots.indexWhere((s) => s.id == dueSlot!.id);
-      if (dueIdx <= lastIdx) return;
+      if (nowMs - storage.lastRotationMs >= intervalMs) {
+        await rotateVerseNow(
+          notify: storage.dailyNotificationsEnabled &&
+              storage.rotationHighPriorityNotification,
+          slotLabel: 'Daily Bread',
+        );
+      }
+      return;
     }
 
-    storage.lastNotifiedSlotKey = slotKey;
-    await storage.save();
+    if (mode == 'times') {
+      if (!storage.dailyNotificationsEnabled) return;
+      final activeSlots = slots;
+      if (activeSlots.isEmpty) return;
 
-    await sendVerseNotification(
-      slotLabel: dueSlot.label,
-      slotOffset: dueSlot.slotOffset,
-    );
+      final now = DateTime.now();
+      final todayPrefix =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      final nowMinutes = now.hour * 60 + now.minute;
+
+      NotificationSlot? dueSlot;
+      for (final slot in activeSlots) {
+        if (nowMinutes >= slot.totalMinutes) {
+          dueSlot = slot;
+        }
+      }
+      if (dueSlot == null) return;
+
+      final slotKey = '$todayPrefix:${dueSlot.id}';
+      if (storage.lastNotifiedSlotKey == slotKey) return;
+
+      if (storage.lastNotifiedSlotKey.startsWith(todayPrefix)) {
+        final lastId =
+            storage.lastNotifiedSlotKey.substring(todayPrefix.length + 1);
+        final lastIdx = activeSlots.indexWhere((s) => s.id == lastId);
+        final dueIdx = activeSlots.indexWhere((s) => s.id == dueSlot!.id);
+        if (dueIdx <= lastIdx) return;
+      }
+
+      storage.lastNotifiedSlotKey = slotKey;
+      await rotateVerseNow(
+        notify: storage.rotationHighPriorityNotification,
+        slotLabel: dueSlot.label,
+      );
+    }
   }
 
-  Future<void> sendTestNotification() async {
-    await sendVerseNotification(
-      slotLabel: 'Bible of the Day',
-      slotOffset: 0,
-    );
-  }
-
-  Future<void> sendVerseNotification({
-    required String slotLabel,
-    required int slotOffset,
+  Future<VerseRef> rotateVerseNow({
+    bool notify = false,
+    String slotLabel = 'Bible of the Day',
   }) async {
-    final ref = repo.getDailyVerseRef(slotOffset: slotOffset);
+    final next = repo.getNextRotatedVerse(
+      topicId: storage.rotationTopic,
+      current: storage.currentVerseRef,
+    );
+    storage.currentVerseRef = next;
+    storage.lastRotationMs = DateTime.now().millisecondsSinceEpoch;
+
+    if (notify) {
+      if (!_isAppInForeground) {
+        storage.unreadNotificationCount += 1;
+      }
+      await storage.save();
+      await sendVerseNotification(slotLabel: slotLabel, verseRef: next);
+      if (!_isAppInForeground) {
+        await _syncLauncherBadge(storage.unreadNotificationCount);
+      }
+    } else {
+      await storage.save();
+    }
+
+    notifyListeners();
+    return next;
+  }
+
+  Future<bool> sendTestNotification(
+      {bool simulateBackgroundBadge = false}) async {
+    final ref = activeVerse;
+    if (simulateBackgroundBadge) {
+      storage.unreadNotificationCount += 1;
+      await storage.save();
+      await _syncLauncherBadge(storage.unreadNotificationCount);
+      notifyListeners();
+    }
+    return sendVerseNotification(slotLabel: 'Bible of the Day', verseRef: ref);
+  }
+
+  Future<bool> sendVerseNotification({
+    required String slotLabel,
+    VerseRef? verseRef,
+    int slotOffset = 0,
+  }) async {
+    final ref = verseRef ?? repo.getDailyVerseRef(slotOffset: slotOffset);
     final book = repo.getBook(ref.bookId);
     final text = await repo.getVerseText(
         storage.translationId, ref.bookId, ref.chapter, ref.verse);
-    if (book == null || text == null || text.isEmpty) return;
+    if (book == null || text == null || text.isEmpty) return false;
 
+    final translation = repo.getTranslation(storage.translationId);
+    final shortTag = translation != null ? ' (${translation.shortName})' : '';
     final refTitle =
         '${book.displayName(storage.translationId)} ${ref.chapter}:${ref.verse}';
-    final title = 'Daily Bread • $slotLabel ($refTitle)';
+    final prefix = slotLabel.isNotEmpty ? slotLabel : 'Daily Bread';
+    final title = '$prefix • $refTitle$shortTag';
 
-    await _dispatchDesktopNotification(title, text);
+    return _dispatchDesktopNotification(title, text);
   }
 
-  Future<void> _dispatchDesktopNotification(String title, String body) async {
+  Future<bool> _dispatchDesktopNotification(String title, String body) async {
     try {
       final client = DBusClient.session();
       final object = DBusRemoteObject(
@@ -138,27 +222,94 @@ class NotificationService {
         'org.freedesktop.Notifications',
         'Notify',
         [
-          const DBusString('Daily Bread'), // app_name
-          const DBusUint32(0), // replaces_id
-          const DBusString('daily-bread-bible'), // app_icon
-          DBusString(title), // summary
-          DBusString(body), // body
-          DBusArray.string(const []), // actions
-          DBusDict.stringVariant(const {}), // hints
-          const DBusInt32(8000), // expire_timeout (8s)
+          const DBusString('Daily Bread'),
+          const DBusUint32(0),
+          const DBusString('dialog-information'),
+          DBusString(title),
+          DBusString(body),
+          DBusArray.string(const []),
+          DBusDict.stringVariant({
+            'urgency': DBusByte(2), // High / Critical priority
+            'desktop-entry':
+                const DBusString('daily-bread-bible_daily-bread-bible'),
+          }),
+          const DBusInt32(10000),
         ],
         replySignature: DBusSignature('u'),
       );
       await client.close();
-      return;
-    } catch (_) {
-      // Fallback to notify-send if D-Bus direct call is unavailable
+      return true;
+    } catch (e) {
+      debugPrint('D-Bus notification failed: $e');
     }
 
     try {
-      await Process.run('notify-send', [title, body, '-a', 'Daily Bread']);
+      final res = await Process.run('notify-send', [
+        '-u',
+        'critical',
+        '-i',
+        'dialog-information',
+        '-a',
+        'Daily Bread',
+        title,
+        body,
+      ]);
+      if (res.exitCode == 0) return true;
+    } catch (e) {
+      debugPrint('notify-send failed: $e');
+    }
+
+    try {
+      final res = await Process.run('gdbus', [
+        'call',
+        '--session',
+        '--dest',
+        'org.freedesktop.Notifications',
+        '--object-path',
+        '/org/freedesktop/Notifications',
+        '--method',
+        'org.freedesktop.Notifications.Notify',
+        'Daily Bread',
+        '0',
+        'dialog-information',
+        title,
+        body,
+        '[]',
+        "{'urgency': <byte 2>}",
+        '10000',
+      ]);
+      return res.exitCode == 0;
+    } catch (e) {
+      debugPrint('gdbus notification failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> _syncLauncherBadge(int count) async {
+    try {
+      final client = DBusClient.session();
+      final path = DBusObjectPath('/com/canonical/unity/launcherentry/1');
+      final props = DBusDict.stringVariant({
+        'count': DBusInt64(count),
+        'count-visible': DBusBoolean(count > 0),
+        'urgent': DBusBoolean(count > 0),
+      });
+
+      const appUris = [
+        'application://daily-bread-bible_daily-bread-bible.desktop',
+        'application://com.dailybread.daily_bread.desktop',
+      ];
+      for (final uri in appUris) {
+        await client.emitSignal(
+          path: path,
+          interface: 'com.canonical.Unity.LauncherEntry',
+          name: 'Update',
+          values: [DBusString(uri), props],
+        );
+      }
+      await client.close();
     } catch (_) {
-      // Ignore gracefully in headless/test environments
+      // Ignore in headless/test environments without session D-Bus
     }
   }
 }

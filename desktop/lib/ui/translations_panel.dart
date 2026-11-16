@@ -21,7 +21,9 @@ class TranslationsPanel extends StatefulWidget {
 }
 
 class _TranslationsPanelState extends State<TranslationsPanel> {
+  String _selectedLanguage = 'All';
   String _filter = '';
+  bool _downloadedOnly = false;
   final Set<String> _downloading = {};
 
   Future<void> _download(TranslationInfo info) async {
@@ -57,8 +59,20 @@ class _TranslationsPanelState extends State<TranslationsPanel> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final languages = widget.repo.getAvailableLanguages();
+    final langCounts = <String, int>{};
+    for (final t in widget.repo.catalog) {
+      langCounts[t.language] = (langCounts[t.language] ?? 0) + 1;
+    }
+
     final q = _filter.trim().toLowerCase();
     final filtered = widget.repo.catalog.where((t) {
+      if (_selectedLanguage != 'All' && t.language != _selectedLanguage) {
+        return false;
+      }
+      if (_downloadedOnly && !widget.repo.isTranslationAvailable(t.id)) {
+        return false;
+      }
       if (q.isEmpty) return true;
       return t.name.toLowerCase().contains(q) ||
           t.language.toLowerCase().contains(q) ||
@@ -69,15 +83,67 @@ class _TranslationsPanelState extends State<TranslationsPanel> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.all(12),
-          child: TextField(
-            decoration: const InputDecoration(
-              hintText: 'Filter 60 languages & packs...',
-              prefixIcon: Icon(Icons.search, size: 18),
-              isDense: true,
-              border: OutlineInputBorder(),
-            ),
-            onChanged: (v) => setState(() => _filter = v),
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              DropdownButtonFormField<String>(
+                initialValue: languages.contains(_selectedLanguage) ||
+                        _selectedLanguage == 'All'
+                    ? _selectedLanguage
+                    : 'All',
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '1. Select Language',
+                  prefixIcon: Icon(Icons.language, size: 18),
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+                items: [
+                  DropdownMenuItem(
+                    value: 'All',
+                    child: Text('All Languages (${widget.repo.catalog.length})'),
+                  ),
+                  ...languages.map(
+                    (lang) => DropdownMenuItem(
+                      value: lang,
+                      child: Text('$lang (${langCounts[lang] ?? 0})'),
+                    ),
+                  ),
+                ],
+                onChanged: (v) {
+                  if (v != null) setState(() => _selectedLanguage = v);
+                },
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                decoration: InputDecoration(
+                  hintText: _selectedLanguage == 'All'
+                      ? '2. Filter translations...'
+                      : '2. Filter $_selectedLanguage translations...',
+                  prefixIcon: const Icon(Icons.search, size: 18),
+                  isDense: true,
+                  border: const OutlineInputBorder(),
+                ),
+                onChanged: (v) => setState(() => _filter = v),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  FilterChip(
+                    label: const Text('Downloaded'),
+                    selected: _downloadedOnly,
+                    onSelected: (v) => setState(() => _downloadedOnly = v),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${filtered.length} shown',
+                    style: theme.textTheme.labelSmall,
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
         Expanded(

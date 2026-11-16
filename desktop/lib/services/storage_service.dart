@@ -27,6 +27,17 @@ class StorageService {
   int afternoonMinute = 0;
   String lastNotifiedSlotKey = '';
 
+  // Flexible schedule & verse rotation
+  String scheduleMode = 'interval'; // 'manual', 'interval', 'times'
+  int rotationIntervalMinutes = 15;
+  List<String> scheduledTimes = ['08:00', '12:00', '17:00'];
+  String rotationTopic = 'all';
+  bool rotationHighPriorityNotification = true;
+  bool showDailyBanner = true;
+  int lastRotationMs = 0;
+  VerseRef? currentVerseRef;
+  int unreadNotificationCount = 0;
+
   File? _dataFile;
 
   Future<void> init() async {
@@ -53,6 +64,38 @@ class StorageService {
         afternoonHour = (json['afternoonHour'] ?? 17) as int;
         afternoonMinute = (json['afternoonMinute'] ?? 0) as int;
         lastNotifiedSlotKey = (json['lastNotifiedSlotKey'] ?? '') as String;
+
+        scheduleMode = (json['scheduleMode'] ?? 'interval') as String;
+        rotationIntervalMinutes =
+            ((json['rotationIntervalMinutes'] ?? 15) as num).toInt().clamp(1, 1440);
+        if (json['scheduledTimes'] is List) {
+          scheduledTimes = (json['scheduledTimes'] as List<dynamic>)
+              .map((e) => e.toString())
+              .where((s) => RegExp(r'^\d{2}:\d{2}$').hasMatch(s))
+              .toList();
+          if (scheduledTimes.isEmpty) {
+            scheduledTimes = ['08:00', '12:00', '17:00'];
+          }
+        } else {
+          String fmt(int h, int m) =>
+              '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}';
+          scheduledTimes = [
+            fmt(morningHour, morningMinute),
+            fmt(noonHour, noonMinute),
+            fmt(afternoonHour, afternoonMinute),
+          ];
+        }
+        rotationTopic = (json['rotationTopic'] ?? 'all') as String;
+        rotationHighPriorityNotification =
+            (json['rotationHighPriorityNotification'] ?? true) as bool;
+        showDailyBanner = (json['showDailyBanner'] ?? true) as bool;
+        lastRotationMs = ((json['lastRotationMs'] ?? 0) as num).toInt();
+        unreadNotificationCount =
+            ((json['unreadNotificationCount'] ?? 0) as num).toInt();
+        if (json['currentVerseRef'] is Map<String, dynamic>) {
+          currentVerseRef =
+              VerseRef.fromJson(json['currentVerseRef'] as Map<String, dynamic>);
+        }
 
         final themeStr = (json['themeMode'] ?? 'system') as String;
         themeMode = switch (themeStr) {
@@ -99,6 +142,15 @@ class StorageService {
       'afternoonHour': afternoonHour,
       'afternoonMinute': afternoonMinute,
       'lastNotifiedSlotKey': lastNotifiedSlotKey,
+      'scheduleMode': scheduleMode,
+      'rotationIntervalMinutes': rotationIntervalMinutes,
+      'scheduledTimes': scheduledTimes,
+      'rotationTopic': rotationTopic,
+      'rotationHighPriorityNotification': rotationHighPriorityNotification,
+      'showDailyBanner': showDailyBanner,
+      'lastRotationMs': lastRotationMs,
+      'currentVerseRef': currentVerseRef?.toJson(),
+      'unreadNotificationCount': unreadNotificationCount,
       'bookmarks': bookmarks.map((b) => b.toJson()).toList(),
       'notes': notes.map((n) => n.toJson()).toList(),
     };

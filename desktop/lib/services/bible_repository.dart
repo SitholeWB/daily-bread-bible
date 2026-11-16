@@ -359,4 +359,44 @@ class BibleRepository {
     final dayOfYear = now.difference(DateTime(now.year, 1, 1)).inDays;
     return _dailyVerses[(dayOfYear * 3 + slotOffset) % _dailyVerses.length];
   }
+
+  List<String> getAvailableLanguages({bool onlyDownloaded = false}) {
+    final source = onlyDownloaded ? availableTranslations : catalog;
+    final langs = source.map((t) => t.language).toSet().toList()..sort();
+    return langs;
+  }
+
+  List<VerseRef> getVersesForTopic(String topicId) {
+    if (topicId != 'all') {
+      final match = topics.where((t) => t.id == topicId).toList();
+      if (match.isNotEmpty && match.first.verses.isNotEmpty) {
+        return match.first.verses;
+      }
+    }
+    final seen = <String>{};
+    final pool = <VerseRef>[];
+    for (final v in _dailyVerses) {
+      final key = '${v.bookId}:${v.chapter}:${v.verse}';
+      if (seen.add(key)) pool.add(v);
+    }
+    for (final topic in topics) {
+      for (final v in topic.verses) {
+        final key = '${v.bookId}:${v.chapter}:${v.verse}';
+        if (seen.add(key)) pool.add(v);
+      }
+    }
+    return pool;
+  }
+
+  VerseRef getNextRotatedVerse({String topicId = 'all', VerseRef? current}) {
+    final pool = getVersesForTopic(topicId);
+    if (pool.isEmpty) return getDailyVerseRef();
+    if (current == null) return pool.first;
+    final idx = pool.indexWhere((v) =>
+        v.bookId == current.bookId &&
+        v.chapter == current.chapter &&
+        v.verse == current.verse);
+    if (idx < 0) return pool.first;
+    return pool[(idx + 1) % pool.length];
+  }
 }
