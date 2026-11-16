@@ -698,7 +698,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'Daily Bread Desktop • v2.0.1 • 100% Offline Core',
+                          'Daily Bread Desktop • v2.0.2 • 100% Offline Core',
                           style: theme.textTheme.bodySmall,
                         ),
                       ],

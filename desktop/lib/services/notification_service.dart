@@ -268,6 +268,11 @@ class NotificationService extends ChangeNotifier {
     }
 
     try {
+      final iconPath =
+          File('/snap/daily-bread-bible/current/meta/gui/daily-bread.png')
+                  .existsSync()
+              ? '/snap/daily-bread-bible/current/meta/gui/daily-bread.png'
+              : 'dialog-information';
       final res = await Process.run('gdbus', [
         'call',
         '--session',
@@ -278,14 +283,17 @@ class NotificationService extends ChangeNotifier {
         '--method',
         'org.freedesktop.Notifications.Notify',
         'Daily Bread',
-        '0',
-        'dialog-information',
+        '@u 0',
+        iconPath,
         title,
         body,
-        '[]',
-        "{'urgency': <byte 2>}",
+        '@as []',
+        '{"urgency": <byte 2>, "desktop-entry": <"daily-bread-bible_daily-bread-bible">}',
         '10000',
       ]);
+      if (res.exitCode != 0) {
+        debugPrint('gdbus notification error: ${res.stderr}');
+      }
       return res.exitCode == 0;
     } catch (e) {
       debugPrint('gdbus notification failed: $e');
@@ -361,6 +369,24 @@ class NotificationService extends ChangeNotifier {
         );
       }
       await client.close();
+      return;
+    } catch (_) {
+      // Fallback to gdbus emit inside strict snap confinement if needed
+    }
+
+    try {
+      final props =
+          '{"count": <int64 $count>, "count-visible": <${count > 0}>, "urgent": <${count > 0}>}';
+      await Process.run('gdbus', [
+        'emit',
+        '--session',
+        '--object-path',
+        '/com/canonical/unity/launcherentry/1',
+        '--signal',
+        'com.canonical.Unity.LauncherEntry.Update',
+        'application://daily-bread-bible_daily-bread-bible.desktop',
+        props,
+      ]);
     } catch (_) {
       // Ignore in headless/test environments without session D-Bus
     }
