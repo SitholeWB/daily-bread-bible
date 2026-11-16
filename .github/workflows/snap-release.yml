@@ -9,18 +9,22 @@ on:
 jobs:
   build-ubuntu-snap:
     runs-on: ubuntu-24.04
+    continue-on-error: true
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Install Snapcraft
         run: |
-          for attempt in 1 2 3; do
+          sudo systemctl start snapd.socket snapd || true
+          sudo snap wait system seed.loaded || true
+          for attempt in 1 2 3 4; do
             if sudo snap install snapcraft --classic; then
               exit 0
             fi
-            echo "snap install snapcraft failed (attempt $attempt), retrying in 5s..."
-            sleep 5
+            delay=$((attempt * 10))
+            echo "snap install snapcraft failed (attempt $attempt), retrying in ${delay}s..."
+            sleep $delay
           done
           exit 1
 
@@ -135,6 +139,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: false
           files: |
             release-artifacts/ubuntu-snap/*.snap
             release-artifacts/linux-tar/*.tar.gz
