@@ -178,19 +178,61 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Build Windows Release
+      - name: Build Windows Release & Setup.exe Installer
         working-directory: desktop
         shell: pwsh
         run: |
           flutter pub get
           flutter build windows --release
-          Compress-Archive -Path "build/windows/x64/runner/Release/*" -DestinationPath "../daily-bread-bible-windows-x64.zip" -Force
 
-      - name: Upload Windows zip artifact
+          $version = ((Select-String -Path "pubspec.yaml" -Pattern "^version:\s*([^\s+]+)").Matches.Groups[1].Value)
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y
+          }
+
+          $releaseDir = (Resolve-Path "build/windows/x64/runner/Release").Path
+          $iconFile = (Resolve-Path "windows/runner/resources/app_icon.ico").Path
+          $outDir = (Resolve-Path "..").Path
+
+          @"
+          [Setup]
+          AppId={{D4B3B91E-5D8A-4D6D-9B78-DAILYBREAD01}
+          AppName=Daily Bread
+          AppVersion=$version
+          AppPublisher=SitholeWB
+          AppPublisherURL=https://github.com/SitholeWB/daily-bread-bible
+          DefaultDirName={localappdata}\Programs\Daily Bread
+          DefaultGroupName=Daily Bread
+          PrivilegesRequired=lowest
+          OutputDir=$outDir
+          OutputBaseFilename=daily-bread-bible-$version-windows-setup
+          SetupIconFile=$iconFile
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
+
+          [Files]
+          Source: "$releaseDir\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\Daily Bread"; Filename: "{app}\daily_bread.exe"
+          Name: "{autodesktop}\Daily Bread"; Filename: "{app}\daily_bread.exe"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\daily_bread.exe"; Description: "Launch Daily Bread"; Flags: nowait postinstall skipifsilent
+          "@ | Set-Content -Encoding UTF8 "installer.iss"
+
+          & $iscc "installer.iss"
+
+      - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-zip
-          path: daily-bread-bible-windows-x64.zip
+          name: windows-installer
+          path: "*-windows-setup.exe"
 
   build-macos:
     runs-on: macos-latest
@@ -240,5 +282,5 @@ jobs:
           files: |
             release-artifacts/ubuntu-snap/*.snap
             release-artifacts/linux-packages/*
-            release-artifacts/windows-zip/*.zip
+            release-artifacts/windows-installer/*.exe
             release-artifacts/macos-dmg/*.dmg
